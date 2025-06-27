@@ -30,7 +30,15 @@ jobs:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push
+      - name: Build test image and run tests
+        uses: docker/build-push-action@v3
+        with:
+          context: .
+          file: ./Dockerfile.prod
+          target: tester
+          push: false
+
+      - name: Build and push final image
         uses: docker/build-push-action@v3
         with:
           context: .
@@ -41,30 +49,9 @@ jobs:
   test:
     needs: build
     runs-on: self-hosted
-    env:
-      DATABASE_URL: postgresql+psycopg://kubsu:kubsu@127.0.0.1:5432/kubsu
-    services:
-      postgres:
-        image: postgres:15-alpine
-        ports:
-          - "5432:5432"
-        env:
-          POSTGRES_DB: kubsu
-          POSTGRES_USER: kubsu
-          POSTGRES_PASSWORD: kubsu
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
     steps:
-      - name: Pull image
-        run: docker pull ${{ needs.build.outputs.image_tag }}
-
-      - name: Run tests
-        run: |
-          docker run --rm --network=host -e DATABASE_URL=${DATABASE_URL} ${{ needs.build.outputs.image_tag }} pytest /app/tests
+      - name: Confirm tests passed in build stage
+        run: echo "Tests passed inside docker build --target tester"
 
   deploy:
     needs: test
