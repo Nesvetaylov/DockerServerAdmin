@@ -64,7 +64,7 @@ jobs:
 
       - name: Run tests
         run: |
-          docker run --rm --network=host -e DATABASE_URL=${DATABASE_URL} ${{ needs.build.outputs.image_tag }}
+          docker run --rm --network=host -e DATABASE_URL=${DATABASE_URL} ${{ needs.build.outputs.image_tag }} pytest
 
   deploy:
     needs: test
