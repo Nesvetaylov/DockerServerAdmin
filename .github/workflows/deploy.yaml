@@ -1,96 +1,98 @@
 name: Deploy
 
 on:
-  push:
-    branches: [ "master" ]
+push:
+branches: [ "master" ]
 
 jobs:
-  test:
-    runs-on: self-hosted
-    services:
-      postgres:
-        image: postgres:15-alpine
-        ports:
-          - "5432:5432"
-        env:
-          POSTGRES_DB: kubsu
-          POSTGRES_USER: kubsu
-          POSTGRES_PASSWORD: kubsu
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+build:
+runs-on: self-hosted
+outputs:
+image_tag: ${{ steps.meta.outputs.tags }}
+steps:
+- name: Checkout code
+uses: actions/checkout@v4
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          ref: dev
+- name: Docker metadata
+id: meta
+uses: docker/metadata-action@v5
+with:
+images: ${{ vars.DOCKERHUB_USERNAME }}/python-crud
+tags: |
+type=sha
 
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v3
+- name: Setup Docker Buildx
+uses: docker/setup-buildx-action@v3
 
-      - name: Build container
-        uses: docker/build-push-action@v3
-        with:
-          context: .
-          file: ./Dockerfile.dev
-          tags: ${{ vars.DOCKERHUB_USERNAME }}/python-crud-dev:latest
-          load: true
+- name: Login to Docker Hub
+uses: docker/login-action@v3
+with:
+username: ${{ vars.DOCKERHUB_USERNAME }}
+password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Run tests
-        run: |
-          docker run --rm --network=host ${{ vars.DOCKERHUB_USERNAME }}/python-crud-dev:latest
+- name: Build and push
+uses: docker/build-push-action@v3
+with:
+context: .
+file: ./Dockerfile.prod
+push: true
+tags: ${{ steps.meta.outputs.tags }}
 
+test:
+needs: build
+runs-on: self-hosted
+env:
+DATABASE_URL: postgresql+psycopg://kubsu:kubsu@127.0.0.1:5432/kubsu
+services:
+postgres:
+image: postgres:15-alpine
+ports:
+- "5432:5432"
+env:
+POSTGRES_DB: kubsu
+POSTGRES_USER: kubsu
+POSTGRES_PASSWORD: kubsu
+options: >-
+--health-cmd pg_isready
+--health-interval 10s
+--health-timeout 5s
+--health-retries 5
 
-  deploy:
-    needs: test
-    runs-on: self-hosted
-    
-    steps:
-      - name: Checkout master branch
-        uses: actions/checkout@v4
-        with:
-          ref: master
+steps:
+- name: Pull image
+run: docker pull ${{ needs.build.outputs.image_tag }}
 
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v3
+- name: Run tests
+run: docker run --rm --network=host \
+-e DATABASE_URL=${DATABASE_URL} \
+${{ needs.build.outputs.image_tag }}
 
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ vars.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+deploy:
+needs: test
+runs-on: self-hosted
 
-      - name: Build and push
-        uses: docker/build-push-action@v3
-        with:
-          context: .
-          file: ./Dockerfile.prod
-          push: true
-          tags: ${{ vars.DOCKERHUB_USERNAME }}/pythod-crud:latest
+steps:
+- name: Deploy to on server
+uses: appleboy/ssh-action@v1
+with:
+host: ${{ secrets.SSH_HOST }}
+port: ${{ secrets.SSH_PORT }}
+username: ${{ secrets.SSH_USERNAME }}
+key: ${{ secrets.SSH_PRIVATE_KEY }}
+script: |
+podman login -u ${{ vars.DOCKERHUB_USERNAME }} -p ${{ secrets.DOCKERHUB_TOKEN }} docker.io
 
-      - name: Deploy to on server
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          port: ${{ secrets.SSH_PORT }}
-          username: ${{ secrets.SSH_USERNAME }} 
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            podman login -u ${{ vars.DOCKERHUB_USERNAME }} -p ${{ secrets.DOCKERHUB_TOKEN }} docker.io
+IMAGE_TAG="${{ needs.build.outputs.image_tag }}"
 
-            # Stop and remove existing container if it exists
-            podman stop pythod-crud || true
-            podman rm pythod-crud || true
+podman stop python-crud || true
+podman rm python-crud || true
+podman rmi $IMAGE_TAG || true
+podman pull $IMAGE_TAG
 
-            # Remove existing image if it exists
-            podman rmi ${{ vars.DOCKERHUB_USERNAME }}/pythod-crud:latest || true
+podman run -d \
+--name python-crud \
+--network host \
+-e DATABASE_URL=postgresql+psycopg://kubsu:kubsu@127.0.0.1:5432/kubsu \
+$IMAGE_TAG
 
-            # Pull new image from Docker Hub
-            podman pull ${{ vars.DOCKERHUB_USERNAME }}/pythod-crud:latest
-
-            # Run new container
-            podman run -d --name pythod-crud --network host ${{ vars.DOCKERHUB_USERNAME }}/pythod-crud:latest
-            echo "Container has been deployed successfully!"
+echo "Container has been deployed successfully!"
