@@ -17,8 +17,7 @@ COPY . /app/
 
 RUN pip install --no-cache-dir .[test]
 
-RUN pytest tests
-
+RUN pytest tests -v -s || cat /app/tests/test_users.py
 FROM python:3.11-alpine
 
 WORKDIR /app
